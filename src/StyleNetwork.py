@@ -1,39 +1,51 @@
 from keras.preprocessing.image import load_img, img_to_array
-import  numpy  as  np
-from keras.applications import  vgg19
+import numpy as np
+from keras.applications import vgg19
 from keras import backend as K
 
 
 class StyleNetwork:
-    def __init__(self, content_img_path, style_img_path, content_weight = 1.0, style_weight=0.1, img_height=400):
+    def __init__(self, content_img_path, style_img_path, img_height=400):
         self.img_height = img_height
         width, height = load_img(content_img_path).size
         self.img_width = int(width * img_height / height)
-        self.input_tensor = self._create_tensor(content_img_path, style_img_path)
-        self.model = vgg19.VGG16(input_tensor=self.input_tensor, weights='imagenet', include_top=False)
-        print('Init:VGG19 Model loaded.')
-
-        self.model_layers = {layer.name: layer.output for layer in self.model.layers}
 
         self.content_layer = 'block5_conv2'
 
-        self.style_layers = ['block1_conv1', 'block1_conv2',
-                        'block2_conv1', 'block2_conv2',
-                        'block3_conv1', 'block3_conv2',
-                        'block4_conv1', 'block4_conv2',
-                        'block5_conv1', 'block5_conv2']
+        self.style_layers = ['block1_conv1', 'block2_conv1',
+                             'block3_conv1', 'block4_conv1',
+                                             'block5_conv1']
+
+        self.generated_img = K.placeholder((1, self.img_height, self.img_width, 3))  # change to noise image
+
+        self.input_tensor = self._create_tensor(content_img_path, style_img_path, self.generated_img)
+
+        self.model = vgg19.VGG19(input_tensor=self.input_tensor, weights='imagenet', include_top=False)
+        print('Init:VGG19 Model loaded.')
+
+        self.model_layers = {layer.name: layer.output for layer in self.model.layers}
+        
 
         self.total_variation_weight = 1e-4
         self.style_weight = style_weight
         self.content_weight = content_weight
 
-        self.loss = K.variable(0.)
-        layer_features = self.outputs_dict[self.content_layer]
+        self.loss = self._init_loss()
 
+    def _init_loss(self):
+        loss = K.variable(0.)
+        layer_features = self.model_layers[self.content_layer]
         content_img_features = layer_features[0, :, :, :]
         comb_features = layer_features[2, :, :, :]
-        self.loss += content_weight * self.content_loss(content_img_features, comb_features)
-
+        loss += self.content_weight * self.content_loss(content_img_features, comb_features)
+        for layer_name in self.style_layers:
+            layer_features = self.model_layers[layer_name]
+            style_reference_features = layer_features[1, :, :, :]
+            combination_features = layer_features[2, :, :, :]
+            sl = self.style_loss(style_reference_features, combination_features)
+            loss += (self.style_weight / len(self.style_layers)) * sl
+        loss += self.total_variation_weight * self.total_variation_loss(self.generated_img)
+        return loss
 
     def _preprocess_img(self, img_path):
         img = load_img(img_path, target_size=(self.img_height, self.img_width))
@@ -52,10 +64,9 @@ class StyleNetwork:
         img = np.clip(img, 0, 255).astype('uint8') #ensure color values are between 0 and 255
         return img
 
-    def _create_tensor(self, content_img_path, style_img_path):
+    def _create_tensor(self, content_img_path, style_img_path, generated_image):
         content_img = K.constant(self._preprocess_img(content_img_path))
         style_img = K.constant(self._preprocess_img(style_img_path))
-        generated_image = K.placeholder((1, self.img_height, self.img_width, 3))  # change to noise image
         return K.concatenate([content_img, style_img, generated_image], axis=0)
 
     def content_loss(self, base, combination):
@@ -81,4 +92,11 @@ class StyleNetwork:
     def print_layers(self):
         for layer in self.model.layers:
             print(layer.name, layer.output, '\n')
+
+
+if __name__ == '__main__':
+    target_image_path = r'Y:\Documents\StyleNetwork\Mountain.jpg'
+    style_reference_image_path = r'Y:\Documents\StyleNetwork\melt.jpg'
+    style_net = StyleNetwork(target_image_path, style_reference_image_path)
+
 
