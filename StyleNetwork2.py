@@ -1,7 +1,6 @@
 # coding: utf-8
-import keras
-from keras.preprocessing.image import load_img, img_to_array
-
+import keras.preprocessing.image as kpi  #load_img, img_to_array
+# from PIL import Image
 import scipy.optimize as optimize
 import scipy.misc as sm
 import time
@@ -9,7 +8,7 @@ import time
 import numpy as np
 from keras.applications import vgg19
 
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 
 from keras import backend as K
 
@@ -18,15 +17,16 @@ target_image_path = r'Y:\Documents\StyleNetwork\City_1.jpg'
 style_reference_image_path = r'Y:\Documents\StyleNetwork\Graphic_1.jpg'
 start_image_path = r'Y:\Documents\StyleNetwork\Space_1.jpg'
 
-width, height = load_img(target_image_path).size
+width, height = kpi.load_img(target_image_path).size
 
 img_height  = 400
 img_width = int(width * img_height / height)
 
+print('initialized')
 
 def preprocess_image(image_path):
-    img = load_img(image_path, target_size=(img_height, img_width))
-    img = img_to_array(img)
+    img = kpi.load_img(image_path, target_size=(img_height, img_width))
+    img = kpi.img_to_array(img)
     img = np.expand_dims(img, axis=0)
     img = vgg19.preprocess_input(img)
     return img
@@ -133,9 +133,6 @@ class Evaluator(object):
 
     
 def run_module():
-    # gen_img = np.random.uniform(0, 255, (1, img_height, img_width, 3)) - 128. # Noise Image
-    gen_img = preprocess_image(start_image_path)  # Chosen Image
-
     target_image = K.constant(preprocess_image(target_image_path))
     style_reference_image = K.constant(preprocess_image(style_reference_image_path))
 
@@ -147,50 +144,57 @@ def run_module():
     loss = K.variable(0.)
 
     # Grab the layers needed to prepare the loss metric
-    content_layer, style_layers = get_layers(target_image, style_reference_image, gen_img)
+    content_layer, style_layers = get_layers(target_image, style_reference_image, gen_img_placeholder)
 
     # Define loss and gradient
-    loss = total_loss(content_layer, style_layers, gen_img)
-    grads = K.gradients(loss, gen_img)
+    loss = total_loss(content_layer, style_layers, gen_img_placeholder)
+    grads = K.gradients(loss, gen_img_placeholder)
 
-    outputs = [loss]
-    outputs += grads
-    fetch_loss = K.function([gen_img], outputs)
+    # outputs = [loss]
+    # outputs += grads
+    # f_outputs = K.function([gen_img], outputs)
 
+    grads = K.gradients(loss, gen_img_placeholder)[0]
+    fetch_loss = K.function([gen_img_placeholder], [loss, grads])
     evaluator = Evaluator(fetch_loss)
     epochs = 40
     result_prefix = 'style_transfer_result'
 
+    gen_img = np.random.uniform(0, 255, (1, img_height, img_width, 3)) - 128.  # Noise Image
+    # gen_img = preprocess_image(start_image_path)  # Chosen Image
+    gen_img = gen_img.flatten()
 
-    name = 'Initial_image.png'
-    sm.imsave(name, gen_img)
-    print('Initial image saved as', name)
+    # name = 'Initial_image.png'
+    # to_save = gen_img.copy()
+    # sm.imsave(name, sm.toimage(deprocess_image(to_save)))
+    # print('Initial image saved as', name)
 
     for i in range(epochs):
         print('Start of iteration', i)
         start_time = time.time()
-        gen_img, min_val, info = optimize.fmin_l_bfgs_b(evaluator.loss, gen_img.flatten(), fprime=evaluator.grads, maxfun=20)
+        gen_img, min_val, info = optimize.fmin_l_bfgs_b(evaluator.loss, gen_img, fprime=evaluator.grads, maxfun=20)
         print('Current loss value:', min_val)
         # Save current generated image
         gen_img = gen_img.copy().reshape((img_height, img_width, 3))
         gen_img = deprocess_image(gen_img)
         name = result_prefix + '_at_iteration_%d.png' % i + 1
-        sm.imsave(name, gen_img)
+        # sm.imsave(name, sm.toimage(gen_img))
         end_time = time.time()
         print('Image saved as', name)
         print('Iteration %d completed in %ds' % (i, end_time - start_time))
 
-    # Content image
-    plt.imshow(load_img(target_image_path, target_size=(img_height, img_width)))
-    plt.figure()
+    # # Content image
+    # plt.imshow(load_img(target_image_path, target_size=(img_height, img_width)))
+    # plt.figure()
+    #
+    # # Style image
+    # plt.imshow(load_img(style_reference_image_path, target_size=(img_height, img_width)))
+    # plt.figure()
+    #
+    # # Generate image
+    # plt.imshow(gen_img)
+    # plt.show()
 
-    # Style image
-    plt.imshow(load_img(style_reference_image_path, target_size=(img_height, img_width)))
-    plt.figure()
-
-    # Generate image
-    plt.imshow(gen_img)
-    plt.show()
 
 if __name__ == '__main__':
     run_module()
