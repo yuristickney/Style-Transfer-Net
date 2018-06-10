@@ -1,4 +1,5 @@
 # coding: utf-8
+import keras
 from keras.preprocessing.image import load_img, img_to_array
 
 import scipy.optimize as optimize
@@ -134,8 +135,8 @@ class Evaluator(object):
         self.grad_values = None
         return grad_values
 
-
-if __name__ == '__main__':
+    
+def run_module():
     # gen_img = np.random.uniform(0, 255, (1, img_height, img_width, 3)) - 128. # Noise Image
     gen_img = preprocess_image(start_image_path)  # Chosen Image
 
@@ -194,6 +195,9 @@ if __name__ == '__main__':
     # Generate image
     plt.imshow(gen_img)
     plt.show()
+
+if __name__ == '__main__':
+    run_module()
 
 
 
