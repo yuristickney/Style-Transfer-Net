@@ -108,22 +108,18 @@ def total_loss(c_layer, s_layer, g_img):
     return content_weight * c_loss + s_loss + total_variation_weight * v_loss
 
 
-def eval_loss_and_grads(x):
-    x = x.reshape((1, height, width, 3))
-    outs = fetch_loss_and_grads([x])
-    loss_value = outs[0]
-    grad_values = outs[1].flatten().astype('float64')
-    return loss_value, grad_values
-
-
 class Evaluator(object):
-    def __init__(self):
+    def __init__(self, fetch_loss):
         self.loss_value = None
         self.grads_values = None
+        self.fetch_loss = fetch_loss
 
     def loss(self, x):
         assert self.loss_value is None
-        loss_value, grad_values = eval_loss_and_grads(x)
+        x = x.reshape((1, height, width, 3))
+        outs = self.fetch_loss([x])
+        loss_value = outs[0]
+        grad_values = outs[1].flatten().astype('float64')
         self.loss_value = loss_value
         self.grad_values = grad_values
         return self.loss_value
@@ -159,9 +155,9 @@ def run_module():
 
     outputs = [loss]
     outputs += grads
-    fetch_loss_and_grads = K.function([gen_img], outputs)
+    fetch_loss = K.function([gen_img], outputs)
 
-    evaluator = Evaluator()
+    evaluator = Evaluator(fetch_loss)
     epochs = 40
     result_prefix = 'style_transfer_result'
 
