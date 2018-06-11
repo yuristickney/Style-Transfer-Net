@@ -181,7 +181,7 @@ class StyleNetwork:
 
         evaluator = self.Evaluator(fetch_loss_and_grads, self.img_height, self.img_width)
 
-        self.output_dir = '.\Results City from Content {}-{} {}{}'.format(style_weight, content_weight, content_layer, ('sharpen' + str(sharpen) if sharpen is not None else ''))
+        self.output_dir = '.\Results City from Dog {}-{} {}{}'.format(style_weight, content_weight, content_layer, ('sharpen' + str(sharpen) if sharpen is not None else ''))
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
         result_prefix = self.output_dir + r'\style_transfer_result'
@@ -229,7 +229,7 @@ class StyleNetwork:
 
     def display_final_results(self):
         # Content image
-        plt.figure(1, figsize=(30, 3))
+        plt.figure(1)
 
         plt.subplot(131)
         plt.imshow(load_img(self.content_img_path, target_size=(self.img_height, self.img_width)))
