@@ -11,12 +11,17 @@ from matplotlib.ticker import NullFormatter
 import numpy as np
 import time
 import os
+import tensorflow as tf
 
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+session = tf.Session(config=config)
 
 class StyleNetwork:
     def __init__(self, content_img_path, style_img_path, starting_img_path=None, use_mask=None):
         self.content_img_path = content_img_path
         self.style_img_path = style_img_path
+        self.starting_img_path = starting_img_path
         self.final_img_path = None
         width, height = load_img(content_img_path).size
 
@@ -29,15 +34,14 @@ class StyleNetwork:
             self.generated_img = np.random.uniform(0, 255, (1, self.img_height, self.img_width, 3)) - 128.
         self.generated_img = self.generated_img.flatten()
 
-        self.combination_image = K.placeholder((1, self.img_height, self.img_width, 3))
+        self.combination_img = K.placeholder((1, self.img_height, self.img_width, 3))
         self.model_layers = self._create_tensor()
-        self.style_losses = []
-        self.content_losses = []
+
         self.loss_values = []
         self.loss_changes = []
 
-    def preprocess_image(self, image_path, normalize=None):
-        img = load_img(image_path, target_size=(self.img_height, self.img_width))
+    def preprocess_image(self, img_path, normalize=None):
+        img = load_img(img_path, target_size=(self.img_height, self.img_width))
         img = img_to_array(img)
         if normalize == 'greyscale':
             img = self.black_white_img(img)
@@ -53,8 +57,9 @@ class StyleNetwork:
         x[:, :, 0] += 103.939
         x[:, :, 1] += 116.779
         x[:, :, 2] += 123.68
-        # 'BGR'->'RGB'
+        # Convert 'BGR'->'RGB'
         x = x[:, :, ::-1]
+        # Ensure color values are between 0 and 255
         x = np.clip(x, 0, 255).astype('uint8')
         return x
 
@@ -96,45 +101,53 @@ class StyleNetwork:
                     img[row][pixel] = np.array([255, 255, 255])
         return img
 
-    def content_loss(self, base, combination):
-        return 0.5 * K.sum(K.square(combination - base))
+    def content_loss(self, content_img, generated_img):
+        return 0.5 * K.sum(K.square(generated_img - content_img))
 
-    def gram_matrix(self, x):
-        features = K.batch_flatten(K.permute_dimensions(x, (2, 0, 1)))
+    def gram_matrix(self, feature_layer):
+        features = K.batch_flatten(K.permute_dimensions(feature_layer, (2, 0, 1)))
         gram = K.dot(features, K.transpose(features))
         return gram
 
-    def style_loss(self, style, combination):
-        S = self.gram_matrix(style)
-        C = self.gram_matrix(combination)
+    def style_loss_1(self, style_img_features, generated_img_features):
+        n_H = int(style_img_features.shape[0])
+        n_W = int(style_img_features.shape[1])
+        n_C = int(style_img_features.shape[2])
+        S = self.gram_matrix(style_img_features)
+        C = self.gram_matrix(generated_img_features)
+        return K.sum(K.square(S - C)) / (4. * (n_C ** 2) * ((n_H * n_W) ** 2))
+
+    def style_loss_2(self, style_img_features, generated_img_features):
         channels = 3
         size = self.img_height * self.img_width
-        return 0.5 * K.sum(K.square(S - C)) / (4. * (channels ** 2) * (size ** 2))
+        S = self.gram_matrix(style_img_features)
+        C = self.gram_matrix(generated_img_features)
+        return K.sum(K.square(S - C)) / (4. * (channels ** 2) * (size ** 2))
 
-    def total_variation_loss(self, x):
-        a = K.square(x[:, :self.img_height - 1, :self.img_width - 1, :] - x[:, 1:, :self.img_width - 1, :])
-        b = K.square(x[:, :self.img_height - 1, :self.img_width - 1, :] - x[:, :self.img_height - 1, 1:, :])
-        return 0.5 * K.sum(K.pow(a + b, 1.25))
+    def total_variation_loss(self, generated_img):
+        a = K.square(generated_img[:, :self.img_height - 1, :self.img_width - 1, :] - generated_img[:, 1:, :self.img_width - 1, :])
+        b = K.square(generated_img[:, :self.img_height - 1, :self.img_width - 1, :] - generated_img[:, :self.img_height - 1, 1:, :])
+        return K.sum(K.pow(a + b, 1.25))
 
     class Evaluator(object):
-        def __init__(self, fetch_loss_and_grads, img_height, img_width):
+        def __init__(self, f_loss_and_grad, img_height, img_width):
             self.loss_value = None
             self.grads_values = None
-            self.fetch_loss_and_grads = fetch_loss_and_grads
+            self.fetch_loss_and_grads = f_loss_and_grad
             self.img_height = img_height
             self.img_width = img_width
 
-        def loss(self, x):
+        def loss(self, img):
             assert self.loss_value is None
-            x = x.reshape((1, self.img_height, self.img_width, 3))
-            outs = self.fetch_loss_and_grads([x])
-            loss_value = outs[0]
-            grad_values = outs[1].flatten().astype('float64')
+            img = img.reshape((1, self.img_height, self.img_width, 3))
+            outputs = self.fetch_loss_and_grads([img])
+            loss_value = outputs[0]
+            grad_values = outputs[1].flatten().astype('float64')
             self.loss_value = loss_value
             self.grad_values = grad_values
             return self.loss_value
 
-        def grads(self, x):
+        def grads(self):
             assert self.loss_value is not None
             grad_values = np.copy(self.grad_values)
             self.loss_value = None
@@ -142,16 +155,16 @@ class StyleNetwork:
             return grad_values
 
     def _create_tensor(self):
-        target_image = K.constant(self.preprocess_image(self.content_img_path))
+        content_image = K.constant(self.preprocess_image(self.content_img_path))
         style_image = K.constant(self.preprocess_image(self.style_img_path))
-        input_tensor = K.concatenate([target_image, style_image, self.combination_image], axis=0)
+        input_tensor = K.concatenate([content_image, style_image, self.combination_img], axis=0)
         # We build the VGG19 network with our batch of 3 images as input.
         # The model will be loaded with pre-trained ImageNet weights.
         model = vgg19.VGG19(input_tensor=input_tensor, weights='imagenet', include_top=False)
         print('vgg Model loaded.')
         return {layer.name: layer.output for layer in model.layers}
 
-    def generate_image(self, content_layer='block3_conv4', style_weight=1., content_weight=0.05, total_variation_weight=1e-4, sharpen=2.0):
+    def generate_image(self, content_layer='block3_conv4', style_weight=1., content_weight=0.05, total_variation_weight=1e-4, sharpen=2.0, s_loss_type=1):
         # Name of layer used for content loss
         # Name of layers used for style loss
         style_layers = ['block1_conv2', 'block2_conv2',
@@ -159,34 +172,41 @@ class StyleNetwork:
                         'block5_conv4']
 
         # Define the loss by adding all components to a `loss` variable
-        loss = K.variable(0.)
+        # loss = K.variable(0.)
         layer_features = self.model_layers[content_layer]
-        target_image_features = layer_features[0, :, :, :]
-        combination_features = layer_features[2, :, :, :]
-        loss += content_weight * self.content_loss(target_image_features, combination_features)
-
+        content_img_features = layer_features[0, :, :, :]
+        generated_img_features = layer_features[2, :, :, :]
+        content_loss = self.content_loss(content_img_features, generated_img_features)
+        style_loss = 0
         for layer_name in style_layers:
             layer_features = self.model_layers[layer_name]
-            style_reference_features = layer_features[1, :, :, :]
-            combination_features = layer_features[2, :, :, :]
-            sl = self.style_loss(style_reference_features, combination_features)
-            # self.style_losses.append(sl)
-            loss += (style_weight / len(style_layers)) * sl
-            # self.content_losses.append(loss)
+            style_img_features = layer_features[1, :, :, :]
+            generated_img_features = layer_features[2, :, :, :]
+            if s_loss_type ==1:
+                sl = self.style_loss_1(style_img_features, generated_img_features)
+            else:
+                sl = self.style_loss_2(style_img_features, generated_img_features)
+            style_loss += (style_weight / len(style_layers)) * sl #style coef
+            # style_loss += 0.2 * sl #style coef
 
-        loss += total_variation_weight * self.total_variation_loss(self.combination_image)
-        # self.content_losses.append(np.mean(loss))
-        grads = K.gradients(loss, self.combination_image)[0]
-        fetch_loss_and_grads = K.function([self.combination_image], [loss, grads])
+        loss = total_variation_weight * self.total_variation_loss(self.combination_img) + content_loss + style_loss
+        # loss = content_weight * content_loss + style_weight * style_loss
+        grads = K.gradients(loss, self.combination_img)[0]
+        f_loss_and_grad = K.function([self.combination_img], [loss, grads])
 
-        evaluator = self.Evaluator(fetch_loss_and_grads, self.img_height, self.img_width)
+        evaluator = self.Evaluator(f_loss_and_grad, self.img_height, self.img_width)
 
-        self.output_dir = '.\Results City from Dog {}-{} {}{}'.format(style_weight, content_weight, content_layer, ('sharpen' + str(sharpen) if sharpen is not None else ''))
+        content_name = self.content_img_path.split('\\')[1].split('.')[0]
+        style_name = self.style_img_path.split('\\')[1].split('.')[0]
+        if self.starting_img_path is None:
+            gen_name = 'Noise'
+        else:
+            gen_name = self.starting_img_path.split('\\')[1].split('.')[0]
+        self.output_dir = '.\Results {} with {} from {} {}-{} {} {} style_loss_{} {}'.format(content_name, style_name, gen_name, style_weight, content_weight, content_layer, ('sharpen' + str(sharpen) if sharpen is not None else ''), s_loss_type, self.use_mask)
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
         result_prefix = self.output_dir + r'\style_transfer_result'
         iterations = 60
-
 
         img = self.generated_img.copy().reshape((self.img_height, self.img_width, 3))
         img = self.deprocess_image(img)
@@ -197,22 +217,21 @@ class StyleNetwork:
 
         # Run scipy-based optimization (L-BFGS) over the pixels of the generated image
         # so as to minimize the neural style loss.
-        # This is our initial state: the target image.
         # Note that `scipy.optimize.fmin_l_bfgs_b` can only process flat vectors.
-        min_val = 0
+        loss_val = 0
         for i in range(iterations):
             print('Start of iteration', (i + 1))
             start_time = time.time()
-            last_min = min_val
-            self.generated_img, min_val, info = so.fmin_l_bfgs_b(evaluator.loss, self.generated_img, fprime=evaluator.grads, maxfun=20)
-            if last_min == 0:
+            last_loss_val = loss_val
+            self.generated_img, loss_val, info = so.fmin_l_bfgs_b(evaluator.loss, self.generated_img, fprime=evaluator.grads, maxfun=20)
+            if last_loss_val == 0:
                 loss_change = None
             else:
-                loss_change = last_min - min_val
+                loss_change = last_loss_val - loss_val
                 self.loss_changes.append(loss_change)
-            print('Current loss value:', min_val)
+            print('Current loss value:', loss_val)
             print('Loss amount:', loss_change)
-            self.loss_values.append(min_val)
+            self.loss_values.append(loss_val)
             # Save current generated image
             img = self.generated_img.copy().reshape((self.img_height, self.img_width, 3))
             img = self.deprocess_image(img)
@@ -221,10 +240,10 @@ class StyleNetwork:
             imsave(fname, img)
             end_time = time.time()
             print('Image saved as', fname)
-            print('Iteration %d completed in %ds' % (i, end_time - start_time))
-            if loss_change is not None and loss_change < 50000000:
-                print('early stopping')
-                break
+            print('Iteration %d completed in %ds' % ((i + 1), end_time - start_time))
+            # if loss_change is not None and loss_change < 50000000:
+            #     print('early stopping')
+            #     break
         self.final_img_path = fname
 
     def display_final_results(self):
@@ -271,9 +290,15 @@ class StyleNetwork:
 
 
 if __name__ == '__main__':
-    target_image_path = r'Y:\Documents\StyleNetwork\City_1.jpg'
-    style_reference_image_path = r'Y:\Documents\StyleNetwork\Graphic_1.jpg'
-    start_image_path = r'Y:\Documents\StyleNetwork\City_1.jpg'
-    stylenet = StyleNetwork(target_image_path, style_reference_image_path, start_image_path, use_mask='mean')
-    stylenet.generate_image(content_layer='block3_conv4')
+    # target_image_path = r'..\yuri.jpg'
+    # style_reference_image_path = r'..\Graphic_1.jpg'
+    # start_image_path = r'..\yuri4.png'
+    # stylenet = StyleNetwork(target_image_path, style_reference_image_path, start_image_path, use_mask='mean')
+    # stylenet.generate_image(style_weight=1, content_weight=.1, content_layer='block1_conv2', s_loss_type=2)
+
+    target_image_path = r'..\City_1.jpg'
+    style_reference_image_path = r'..\melt.jpg'
+    target_image_path = r'..\City_1.jpg'
+    stylenet = StyleNetwork(target_image_path, style_reference_image_path, target_image_path, use_mask='mean')
+    stylenet.generate_image(content_layer='block2_conv2', content_weight=.1, style_weight=2, s_loss_type=2)
     stylenet.display_final_results()
